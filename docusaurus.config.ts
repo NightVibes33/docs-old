@@ -109,11 +109,6 @@ const config: Config = {
           docsPluginId: 'api'
         },
         {
-          href: 'mailto:contact@tscircuit.com',
-          label: 'Support',
-          position: 'right',
-        },
-        {
           href: 'https://tscircuit.com/trending',
           label: 'Find Packages',
           position: 'right',
