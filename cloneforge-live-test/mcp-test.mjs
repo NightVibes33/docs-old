@@ -16,106 +16,37 @@ function parseMcpBody(text) {
     .map(line => line.slice(5).trim())
     .filter(Boolean)
     .filter(line => line !== '[DONE]');
-  for (let i = payloads.length - 1; i >= 0; i--) {
-    try { return JSON.parse(payloads[i]); } catch {}
+  for (let index = payloads.length - 1; index >= 0; index--) {
+    try { return JSON.parse(payloads[index]); } catch {}
   }
   return { raw: text };
 }
 
 async function postRpc(method, params, notification = false) {
   const id = notification ? undefined : requestId++;
-  const payload = { jsonrpc: '2.0', method, ...(params === undefined ? {} : { params }), ...(id === undefined ? {} : { id }) };
+  const payload = {
+    jsonrpc: '2.0',
+    method,
+    ...(params === undefined ? {} : { params }),
+    ...(id === undefined ? {} : { id }),
+  };
   const headers = {
     'content-type': 'application/json',
-    'accept': 'application/json, text/event-stream',
+    accept: 'application/json, text/event-stream',
   };
   if (sessionId) headers['mcp-session-id'] = sessionId;
-  const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(payload), redirect: 'follow' });
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+    redirect: 'follow',
+  });
   sessionId = response.headers.get('mcp-session-id') || sessionId;
-  const text = await response.text();
-  const parsed = parseMcpBody(text);
-  if (!response.ok) {
-    throw new Error(`${method} HTTP ${response.status}: ${text.slice(0, 2000)}`);
-  }
-  if (parsed?.error) {
-    throw new Error(`${method} RPC error: ${JSON.stringify(parsed.error)}`);
-  }
-  return { status: response.status, contentType: response.headers.get('content-type'), sessionId, parsed, raw: text };
-}
-
-function primitiveValue(name, schema, mode = 'url') {
-  if (schema?.enum?.length) return schema.enum[0];
-  const lower = name.toLowerCase();
-  const type = Array.isArray(schema?.type) ? schema.type.find(v => v !== 'null') : schema?.type;
-  if (type === 'boolean') return true;
-  if (type === 'integer' || type === 'number') return 1;
-  if (type === 'array') {
-    const item = schema?.items || { type: 'string' };
-    if (item.type === 'object' || item.properties) return [buildObject(item, mode)];
-    return [primitiveValue(name.replace(/s$/, ''), item, mode)];
-  }
-  if (type === 'object' || schema?.properties) return buildObject(schema, mode);
-  if (lower.includes('url') || lower.includes('link') || lower === 'source') return mode === 'url' ? pocketBotUrl : brief;
-  if (lower.includes('description') || lower.includes('brief') || lower.includes('prompt') || lower.includes('context')) return brief;
-  if (lower.includes('target') || lower.includes('platform')) return 'Native SwiftUI iPhone and iPad application';
-  if (lower.includes('project') || lower.includes('appname') || lower === 'name' || lower.includes('title')) return 'PocketForge';
-  if (lower.includes('type') || lower.includes('kind')) return mode === 'url' ? 'app_store' : 'description';
-  if (lower.includes('content') || lower.includes('text') || lower.includes('value')) return mode === 'url' ? pocketBotUrl : brief;
-  if (lower.includes('id')) return 'pocketforge-live-test';
-  return mode === 'url' ? brief : 'PocketForge';
-}
-
-function buildObject(schema, mode = 'url') {
-  const properties = schema?.properties || {};
-  const required = new Set(schema?.required || []);
-  const result = {};
-  for (const [name, propSchema] of Object.entries(properties)) {
-    const lower = name.toLowerCase();
-    const useful = required.has(name)
-      || lower.includes('url') || lower.includes('source') || lower.includes('description')
-      || lower.includes('brief') || lower.includes('prompt') || lower.includes('target')
-      || lower.includes('platform') || lower.includes('project') || lower.includes('name')
-      || lower.includes('original') || lower.includes('capture') || lower.includes('audit');
-    if (!useful) continue;
-    if (mode === 'description' && (lower.includes('url') || lower === 'link')) continue;
-    result[name] = primitiveValue(name, propSchema, mode);
-  }
-  for (const name of required) {
-    if (!(name in result)) result[name] = primitiveValue(name, properties[name] || {}, mode);
-  }
-  return result;
-}
-
-function toolArgs(tool, mode = 'url', projectId) {
-  const schema = tool.inputSchema || { type: 'object', properties: {} };
-  const args = buildObject(schema, mode);
-  const props = schema.properties || {};
-  if (projectId) {
-    for (const name of Object.keys(props)) {
-      if (name.toLowerCase().includes('project') && name.toLowerCase().includes('id')) args[name] = projectId;
-      else if (name.toLowerCase() === 'id') args[name] = projectId;
-    }
-  }
-  return args;
-}
-
-function findProjectId(value, seen = new Set()) {
-  if (!value || typeof value !== 'object' || seen.has(value)) return undefined;
-  seen.add(value);
-  for (const [key, child] of Object.entries(value)) {
-    if (/project.?id/i.test(key) && typeof child === 'string') return child;
-    const nested = findProjectId(child, seen);
-    if (nested) return nested;
-    if (typeof child === 'string') {
-      try {
-        const parsed = JSON.parse(child);
-        const fromText = findProjectId(parsed, seen);
-        if (fromText) return fromText;
-      } catch {}
-      const match = child.match(/project(?:_|\s|-)?id["'\s:=]+([A-Za-z0-9_-]{6,})/i);
-      if (match) return match[1];
-    }
-  }
+  const raw = await response.text();
+  const parsed = parseMcpBody(raw);
+  if (!response.ok) throw new Error(`${method} HTTP ${response.status}: ${raw.slice(0, 2000)}`);
+  if (parsed?.error) throw new Error(`${method} RPC error: ${JSON.stringify(parsed.error)}`);
+  return { status: response.status, parsed, raw };
 }
 
 const report = { endpoint, checks: [], calls: {} };
@@ -124,71 +55,135 @@ function check(name, ok, detail) {
   if (!ok) process.exitCode = 1;
 }
 
+function resultText(call) {
+  return JSON.stringify(call?.parsed || call || {});
+}
+
+function structured(call) {
+  return call?.parsed?.result?.structuredContent || {};
+}
+
+function toolByName(tools, name) {
+  const tool = tools.find(item => item.name === name);
+  if (!tool) throw new Error(`Tool not found: ${name}`);
+  return tool;
+}
+
+function stateArgs(tool, projectState) {
+  const properties = tool.inputSchema?.properties || {};
+  const args = {};
+  if ('projectState' in properties) args.projectState = projectState;
+  if ('project_state' in properties) args.project_state = projectState;
+  if ('state' in properties) args.state = projectState;
+  return args;
+}
+
 try {
   const init = await postRpc('initialize', {
     protocolVersion: '2025-06-18',
     capabilities: {},
-    clientInfo: { name: 'cloneforge-live-verifier', version: '1.0.0' },
+    clientInfo: { name: 'cloneforge-live-verifier', version: '2.0.0' },
   });
   report.calls.initialize = init.parsed;
-  check('initialize', Boolean(init.parsed?.result), JSON.stringify(init.parsed).slice(0, 800));
+  check('initialize', Boolean(init.parsed?.result), resultText(init).slice(0, 1000));
   await postRpc('notifications/initialized', {}, true);
 
   const listed = await postRpc('tools/list', {});
   report.calls.toolsList = listed.parsed;
   const tools = listed.parsed?.result?.tools || [];
-  const names = tools.map(t => t.name);
+  const names = tools.map(tool => tool.name);
   const expected = [
-    'cloneforge_start_project', 'cloneforge_capture_sources', 'cloneforge_get_project',
-    'cloneforge_export_project', 'cloneforge_audit_project', 'cloneforge_publish_github',
-    'cloneforge_check_build'
+    'cloneforge_start_project',
+    'cloneforge_capture_sources',
+    'cloneforge_get_project',
+    'cloneforge_export_project',
+    'cloneforge_audit_project',
+    'cloneforge_publish_github',
+    'cloneforge_check_build',
   ];
   check('seven-tools-discovered', expected.every(name => names.includes(name)), names.join(', '));
 
-  const startTool = tools.find(t => t.name === 'cloneforge_start_project');
-  check('start-project-schema-present', Boolean(startTool?.inputSchema), JSON.stringify(startTool?.inputSchema || {}).slice(0, 1500));
+  const startTool = toolByName(tools, 'cloneforge_start_project');
+  check('start-project-schema-present', Boolean(startTool.inputSchema), JSON.stringify(startTool.inputSchema).slice(0, 1800));
 
-  const urlArgs = toolArgs(startTool, 'url');
+  const urlArgs = {
+    sourceUrl: pocketBotUrl,
+    description: brief,
+    targetName: 'PocketForge',
+    bundleId: 'com.nightvibes33.pocketforge',
+    platform: 'native-swiftui',
+    backend: 'supabase',
+    minimumIos: '18.0',
+    maxScreens: 16,
+    visualDirection: 'Distinct dark kinetic automation workspace with original typography, iconography, color system, and interaction patterns. Do not copy PocketBot branding or assets.',
+  };
   report.urlArgs = urlArgs;
   const started = await postRpc('tools/call', { name: startTool.name, arguments: urlArgs });
   report.calls.startUrl = started.parsed;
-  const startText = JSON.stringify(started.parsed);
-  check('pocketbot-url-call', !/invalid arguments|validation error/i.test(startText) && Boolean(started.parsed?.result), startText.slice(0, 1600));
-  check('pocketbot-evidence', /PocketBot|6760196140|apps\.apple\.com/i.test(startText), startText.slice(0, 1600));
+  const startText = resultText(started);
+  const startStructured = structured(started);
+  check('pocketbot-url-call', Boolean(started.parsed?.result) && !/invalid arguments|validation error/i.test(startText), startText.slice(0, 1800));
+  check('pocketbot-evidence', /PocketBot|6760196140|apps\.apple\.com/i.test(startText), startText.slice(0, 1800));
+  check('no-fake-video-input', !/ffmpeg ENOENT|spawn .*ffmpeg/i.test(startText), startStructured.currentIssue || 'No ffmpeg issue');
 
-  const projectId = findProjectId(started.parsed);
+  const projectId = startStructured.projectId;
+  const projectState = startStructured.projectState;
   report.projectId = projectId;
-  check('project-id-returned', Boolean(projectId), projectId || 'No project id found');
+  check('project-id-returned', typeof projectId === 'string' && projectId.length > 6, projectId || 'missing');
+  check('portable-project-state-returned', typeof projectState === 'string' && projectState.startsWith('cf2.'), projectState ? `${projectState.slice(0, 36)}… (${projectState.length} chars)` : 'missing');
 
-  const descriptionArgs = toolArgs(startTool, 'description');
+  const graph = startStructured.graph || {};
+  const fileManifest = startStructured.fileManifest || [];
+  const audit = startStructured.audit || {};
+  check('product-graph-complete', Array.isArray(graph.screens) && graph.screens.length >= 4 && Array.isArray(graph.actions) && graph.actions.length >= 4, `${graph.screens?.length || 0} screens, ${graph.actions?.length || 0} actions`);
+  check('repository-generated', Array.isArray(fileManifest) && fileManifest.length >= 20, `${fileManifest.length || 0} files`);
+  check('static-release-gates', Array.isArray(audit.gates) && audit.gates.filter(gate => gate.status === 'pass').length >= 8, JSON.stringify(audit.gates || []).slice(0, 2400));
+  check('no-placeholders-dead-controls-or-secrets', audit.placeholderCount === 0 && audit.deadControlCount === 0 && audit.secretFindingCount === 0, JSON.stringify({ placeholderCount: audit.placeholderCount, deadControlCount: audit.deadControlCount, secretFindingCount: audit.secretFindingCount }));
+
+  const descriptionArgs = {
+    description: brief,
+    targetName: 'PocketForge Description Build',
+    bundleId: 'com.nightvibes33.pocketforge.description',
+    platform: 'native-swiftui',
+    backend: 'supabase',
+    minimumIos: '18.0',
+    maxScreens: 16,
+  };
   report.descriptionArgs = descriptionArgs;
   const described = await postRpc('tools/call', { name: startTool.name, arguments: descriptionArgs });
   report.calls.startDescription = described.parsed;
-  const descriptionText = JSON.stringify(described.parsed);
-  check('description-only-call', !/invalid arguments|validation error/i.test(descriptionText) && Boolean(described.parsed?.result), descriptionText.slice(0, 1600));
+  const descriptionText = resultText(described);
+  check('description-only-call', Boolean(described.parsed?.result) && !/invalid arguments|validation error/i.test(descriptionText), descriptionText.slice(0, 1800));
 
-  for (const toolName of ['cloneforge_get_project', 'cloneforge_audit_project']) {
-    const tool = tools.find(t => t.name === toolName);
-    if (!tool || !projectId) continue;
-    const args = toolArgs(tool, 'url', projectId);
+  for (const toolName of ['cloneforge_get_project', 'cloneforge_audit_project', 'cloneforge_export_project']) {
+    const tool = toolByName(tools, toolName);
+    const args = stateArgs(tool, projectState);
+    report[`${toolName}Args`] = Object.fromEntries(Object.entries(args).map(([key, value]) => [key, typeof value === 'string' ? `${value.slice(0, 24)}…` : value]));
     const called = await postRpc('tools/call', { name: tool.name, arguments: args });
     report.calls[toolName] = called.parsed;
-    const text = JSON.stringify(called.parsed);
-    check(toolName, Boolean(called.parsed?.result) && !/not found|invalid arguments|validation error/i.test(text), text.slice(0, 1600));
+    const text = resultText(called);
+    check(toolName, Boolean(called.parsed?.result) && !/invalid arguments|validation error|project not found/i.test(text), text.slice(0, 1800));
   }
 
-  const combined = JSON.stringify(report.calls);
-  check('generated-artifacts-reported', /repository|swiftui|xcodegen|backend|acceptance|screen/i.test(combined), combined.slice(0, 1800));
-  check('proof-or-audit-reported', /audit|gate|placeholder|dead.?control|secret.?scan|passed/i.test(combined), combined.slice(0, 1800));
+  const auditCall = report.calls.cloneforge_audit_project;
+  const auditText = JSON.stringify(auditCall || {});
+  check('follow-up-audit-evidence', /placeholder|dead.?control|secret|release|gate|score/i.test(auditText), auditText.slice(0, 1800));
+
+  const exportCall = report.calls.cloneforge_export_project;
+  const exportText = JSON.stringify(exportCall || {});
+  check('repository-export-returned', /zip|archive|base64|download|file/i.test(exportText), exportText.slice(0, 1800));
 } catch (error) {
   report.fatal = String(error?.stack || error);
   check('fatal-error', false, report.fatal);
 }
 
-report.ok = report.checks.every(c => c.ok);
+report.ok = report.checks.every(checkResult => checkResult.ok);
 await fs.writeFile('cloneforge-live-test/results/report.json', JSON.stringify(report, null, 2));
 await fs.writeFile('cloneforge-live-test/results/tools.json', JSON.stringify(report.calls.toolsList || {}, null, 2));
 await fs.writeFile('cloneforge-live-test/results/start-url.json', JSON.stringify(report.calls.startUrl || {}, null, 2));
 await fs.writeFile('cloneforge-live-test/results/start-description.json', JSON.stringify(report.calls.startDescription || {}, null, 2));
+await fs.writeFile('cloneforge-live-test/results/get-project.json', JSON.stringify(report.calls.cloneforge_get_project || {}, null, 2));
+await fs.writeFile('cloneforge-live-test/results/audit-project.json', JSON.stringify(report.calls.cloneforge_audit_project || {}, null, 2));
+await fs.writeFile('cloneforge-live-test/results/export-project.json', JSON.stringify(report.calls.cloneforge_export_project || {}, null, 2));
 console.log(JSON.stringify({ ok: report.ok, checks: report.checks, projectId: report.projectId }, null, 2));
 if (!report.ok) process.exitCode = 1;
