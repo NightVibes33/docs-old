@@ -1,0 +1,1 @@
+Trigger production MCP verification after workflow registration.
