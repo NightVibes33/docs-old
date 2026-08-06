@@ -1,0 +1,156 @@
+name: CloneForge macOS Build Proof
+
+on:
+  push:
+    branches:
+      - cloneforge-v2-deploy
+    paths:
+      - 'cloneforge-live-test/generate-pocketforge.mjs'
+      - '.github/workflows/cloneforge-macos-proof.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-build-test:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout proof harness
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Generate PocketForge through live MCP
+        id: generate
+        env:
+          MCP_URL: https://cloneforge-mcp.vercel.app/api/mcp
+          OUTPUT_DIR: cloneforge-live-test/generated
+        run: node cloneforge-live-test/generate-pocketforge.mjs
+
+      - name: Install XcodeGen
+        id: install
+        if: always()
+        continue-on-error: true
+        run: brew install xcodegen
+
+      - name: Run generated static proof gates
+        id: audit
+        if: always()
+        continue-on-error: true
+        working-directory: cloneforge-live-test/generated
+        run: |
+          mkdir -p build-reports
+          node scripts/audit-project.mjs 2>&1 | tee build-reports/static-audit.log
+
+      - name: Generate Xcode project
+        id: xcodegen
+        if: always()
+        continue-on-error: true
+        working-directory: cloneforge-live-test/generated
+        run: xcodegen generate 2>&1 | tee build-reports/xcodegen.log
+
+      - name: Select iOS simulator
+        id: simulator
+        if: always()
+        continue-on-error: true
+        working-directory: cloneforge-live-test/generated
+        run: |
+          UDID="$(bash scripts/select-simulator.sh)"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "$UDID" | tee build-reports/simulator-udid.txt
+
+      - name: Compile and run generated tests
+        id: test
+        if: always()
+        continue-on-error: true
+        working-directory: cloneforge-live-test/generated
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project PocketForge.xcodeproj \
+            -scheme GeneratedApp \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            -configuration Debug \
+            test \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build-reports/xcodebuild-test.log
+
+      - name: Build unsigned device application
+        id: device
+        if: always()
+        continue-on-error: true
+        working-directory: cloneforge-live-test/generated
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project PocketForge.xcodeproj \
+            -scheme GeneratedApp \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build \
+            2>&1 | tee build-reports/xcodebuild-device.log
+
+      - name: Package unsigned IPA
+        id: package
+        if: always()
+        continue-on-error: true
+        working-directory: cloneforge-live-test/generated
+        run: |
+          APP="$(find DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          ditto -c -k --sequesterRsrc --keepParent Payload PocketForge-unsigned.ipa
+          test -s PocketForge-unsigned.ipa
+
+      - name: Write proof summary
+        if: always()
+        working-directory: cloneforge-live-test
+        run: |
+          mkdir -p generated/build-reports
+          cat > generated/build-reports/workflow-outcomes.json <<EOF
+          {
+            "generate": "${{ steps.generate.outcome }}",
+            "install": "${{ steps.install.outcome }}",
+            "audit": "${{ steps.audit.outcome }}",
+            "xcodegen": "${{ steps.xcodegen.outcome }}",
+            "simulator": "${{ steps.simulator.outcome }}",
+            "test": "${{ steps.test.outcome }}",
+            "deviceBuild": "${{ steps.device.outcome }}",
+            "ipaPackage": "${{ steps.package.outcome }}"
+          }
+          EOF
+          cat generated/build-reports/workflow-outcomes.json
+
+      - name: Upload complete macOS proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloneforge-pocketforge-macos-proof
+          path: |
+            cloneforge-live-test/generated/build-reports
+            cloneforge-live-test/generated/cloneforge
+            cloneforge-live-test/generated/PocketForge-unsigned.ipa
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce proof gate
+        if: always()
+        run: |
+          test "${{ steps.generate.outcome }}" = success
+          test "${{ steps.install.outcome }}" = success
+          test "${{ steps.audit.outcome }}" = success
+          test "${{ steps.xcodegen.outcome }}" = success
+          test "${{ steps.simulator.outcome }}" = success
+          test "${{ steps.test.outcome }}" = success
+          test "${{ steps.device.outcome }}" = success
+          test "${{ steps.package.outcome }}" = success
