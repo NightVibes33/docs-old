@@ -5,6 +5,9 @@ on:
   push:
     paths:
       - '.github/workflows/cloneforge-source-reconstruct.yml'
+  pull_request:
+    paths:
+      - 'cloneforge-reconstruct-trigger.txt'
 
 permissions:
   contents: read
