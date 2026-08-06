@@ -1,0 +1,40 @@
+name: CloneForge v2 Live Verification
+
+on:
+  push:
+    branches:
+      - cloneforge-v2-deploy
+    paths:
+      - 'cloneforge-live-test/**'
+      - '.github/workflows/cloneforge-live-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run live MCP protocol and PocketBot tests
+        env:
+          MCP_URL: https://cloneforge-mcp.vercel.app/api/mcp
+        run: node cloneforge-live-test/mcp-test.mjs
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloneforge-v2-live-verification
+          path: cloneforge-live-test/results
+          if-no-files-found: error
+          retention-days: 14
