@@ -1,0 +1,76 @@
+name: CloneForge Source Reconstruction
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cloneforge-source-reconstruct.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deployment assets
+        uses: actions/checkout@v4
+        with:
+          ref: cloneforge-v2-deploy
+
+      - name: Reconstruct production source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reconstructed overlays/v23 overlays/v232
+
+          cat cloneforge-v2.2.0/source.part.{00,01,02,03,04,05,06,07,08,09,10} > /tmp/base.b64
+          base64 -d /tmp/base.b64 > /tmp/base.tar.gz
+          echo "base bytes=$(wc -c < /tmp/base.tar.gz) sha256=$(sha256sum /tmp/base.tar.gz | cut -d' ' -f1)"
+          tar -xzf /tmp/base.tar.gz -C reconstructed
+
+          cat \
+            cloneforge-v2.3.0/source.part.00 \
+            cloneforge-v2.3.0/source.part.01 \
+            cloneforge-v2.3.0/source.middle \
+            cloneforge-v2.3.0/source.tail > /tmp/v23.b64
+          base64 -d /tmp/v23.b64 > /tmp/v23.tar.gz
+          echo "v23 bytes=$(wc -c < /tmp/v23.tar.gz) sha256=$(sha256sum /tmp/v23.tar.gz | cut -d' ' -f1)"
+          tar -tzf /tmp/v23.tar.gz | tee /tmp/v23-files.txt
+          tar -xzf /tmp/v23.tar.gz -C overlays/v23
+          cp -a overlays/v23/. reconstructed/
+
+          cat \
+            cloneforge-v2.3.2/source.part.00 \
+            cloneforge-v2.3.2/source.part.01 \
+            cloneforge-v2.3.2/source.part.02a \
+            cloneforge-v2.3.2/source.part.02b \
+            cloneforge-v2.3.2/source.tailA \
+            cloneforge-v2.3.2/source.tailB > /tmp/v232.b64
+          base64 -d /tmp/v232.b64 > /tmp/v232.tar.gz
+          echo "v232 bytes=$(wc -c < /tmp/v232.tar.gz) sha256=$(sha256sum /tmp/v232.tar.gz | cut -d' ' -f1)"
+          tar -tzf /tmp/v232.tar.gz | tee /tmp/v232-files.txt
+          tar -xzf /tmp/v232.tar.gz -C overlays/v232
+          cp -a overlays/v232/. reconstructed/
+
+          find reconstructed -maxdepth 3 -type f | sort | tee /tmp/reconstructed-files.txt
+          tar -czf /tmp/cloneforge-production-source.tar.gz -C reconstructed .
+
+      - name: Upload reconstructed source
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloneforge-production-source
+          path: /tmp/cloneforge-production-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload reconstruction diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloneforge-reconstruction-diagnostics
+          path: |
+            /tmp/v23-files.txt
+            /tmp/v232-files.txt
+            /tmp/reconstructed-files.txt
+          if-no-files-found: error
+          retention-days: 1
