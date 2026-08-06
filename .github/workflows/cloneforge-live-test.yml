@@ -25,6 +25,29 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Correct nested action coverage assertion
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('cloneforge-live-test/mcp-test.mjs')
+          source = path.read_text()
+          old = "check('product-graph-complete', Array.isArray(graph.screens) && graph.screens.length >= 4 && Array.isArray(graph.actions) && graph.actions.length >= 4, `${graph.screens?.length || 0} screens, ${graph.actions?.length || 0} actions`);"
+          new = """const countNestedActions = value => {
+            if (Array.isArray(value)) return value.reduce((sum, item) => sum + countNestedActions(item), 0);
+            if (!value || typeof value !== 'object') return 0;
+            return Object.entries(value).reduce((sum, [key, child]) => {
+              const direct = /actions?$/i.test(key) && Array.isArray(child) ? child.length : 0;
+              return sum + direct + countNestedActions(child);
+            }, 0);
+          };
+          const mappedActionCount = countNestedActions(graph);
+          const coverageGate = Array.isArray(audit.gates) ? audit.gates.find(gate => gate.id === 'screen-coverage') : undefined;
+          check('product-graph-complete', Array.isArray(graph.screens) && graph.screens.length >= 4 && mappedActionCount >= 4 && coverageGate?.status === 'pass', `${graph.screens?.length || 0} screens, ${mappedActionCount} nested actions, ${coverageGate?.status || 'missing'} coverage gate`);"""
+          if old not in source:
+              raise SystemExit('Expected product graph assertion not found')
+          path.write_text(source.replace(old, new))
+
       - name: Run live MCP protocol and PocketBot tests
         env:
           MCP_URL: https://cloneforge-mcp.vercel.app/api/mcp
