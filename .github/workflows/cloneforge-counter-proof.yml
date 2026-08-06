@@ -1,0 +1,173 @@
+name: CloneForge Counter Proof
+
+on:
+  push:
+    branches:
+      - cloneforge-counter-proof-v231
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prove-counter:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout proof branch
+        uses: actions/checkout@v4
+
+      - name: Download generated CloneForge project
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf CounterProof generated.zip
+          curl --fail --location --retry 4 --retry-all-errors \
+            https://cloneforge-v231-zip-bridge.vercel.app/api/export \
+            --output generated.zip
+          unzip -t generated.zip
+          mkdir CounterProof
+          unzip -q generated.zip -d CounterProof
+          shasum -a 256 generated.zip | tee generated-zip.sha256
+          find CounterProof -type f | sort
+
+      - name: Verify exact counter-domain source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd CounterProof
+          test -f Sources/Models.swift
+          test -f Sources/AppModel.swift
+          test -f Sources/FeatureViews.swift
+          test -f Tests/GeneratedAppTests.swift
+          test -f project.yml
+          test -f scripts/audit-project.mjs
+
+          grep -Rqi 'CounterState' Sources Tests
+          grep -Rqi 'CounterEvent' Sources Tests
+          grep -Rqi 'CounterPreferences' Sources Tests
+          grep -Rqi 'Increment' Sources Tests
+          grep -Rqi 'Decrement' Sources Tests
+          grep -Rqi 'Reset counter' Sources Tests
+          grep -Rqi 'Clear history' Sources Tests
+          grep -Rqi 'haptics' Sources Tests
+
+          if grep -RqiE 'struct Workflow|RunRecord|WorkflowRunner|/v1/workflows|ConnectionService' Sources Tests backend; then
+            echo 'Forbidden workflow-domain implementation found.' >&2
+            exit 1
+          fi
+
+      - name: Run generated static audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd CounterProof
+          node scripts/audit-project.mjs
+
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen --version
+          xcodebuild -version
+
+      - name: Generate Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd CounterProof
+          xcodegen generate
+          test -d CounterProof.xcodeproj
+          xcodebuild -project CounterProof.xcodeproj -list
+
+      - name: Select and boot simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          UDID=$(python3 - <<'PY'
+          import json, subprocess
+          data = json.loads(subprocess.check_output(['xcrun','simctl','list','devices','available','--json']))
+          candidates = []
+          for runtime, devices in data.get('devices', {}).items():
+              if 'iOS' not in runtime:
+                  continue
+              for device in devices:
+                  if device.get('isAvailable') and device.get('name','').startswith('iPhone'):
+                      candidates.append((runtime, device['name'], device['udid']))
+          if not candidates:
+              raise SystemExit('No available iPhone simulator')
+          print(sorted(candidates, reverse=True)[0][2])
+          PY
+          )
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$UDID" || true
+          open -a Simulator || true
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Run XCTest on simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd CounterProof
+          xcodebuild \
+            -project CounterProof.xcodeproj \
+            -scheme CounterProof \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            -derivedDataPath build/DerivedData-Simulator \
+            test | tee build-xctest.log
+
+      - name: Compile unsigned device app
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd CounterProof
+          xcodebuild \
+            -project CounterProof.xcodeproj \
+            -scheme CounterProof \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData-Device \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build | tee build-device.log
+
+      - name: Package and validate unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd CounterProof
+          APP=$(find build/DerivedData-Device/Build/Products/Release-iphoneos -maxdepth 1 -type d -name '*.app' | head -n 1)
+          test -n "$APP"
+          test -f "$APP/Info.plist"
+          rm -rf Payload CounterProof-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP" Payload/
+          /usr/bin/zip -qry CounterProof-unsigned.ipa Payload
+          unzip -t CounterProof-unsigned.ipa
+          test -s CounterProof-unsigned.ipa
+          file CounterProof-unsigned.ipa
+          shasum -a 256 CounterProof-unsigned.ipa | tee CounterProof-unsigned.ipa.sha256
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+
+      - name: Upload proof artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CounterProof-v231-proof
+          if-no-files-found: error
+          path: |
+            generated.zip
+            generated-zip.sha256
+            CounterProof/CounterProof-unsigned.ipa
+            CounterProof/CounterProof-unsigned.ipa.sha256
+            CounterProof/build-xctest.log
+            CounterProof/build-device.log
+            CounterProof/cloneforge/audit-report.json
