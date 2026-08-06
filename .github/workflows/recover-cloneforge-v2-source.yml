@@ -1,0 +1,51 @@
+name: Recover CloneForge v2 Source
+
+on:
+  push:
+    branches:
+      - cloneforge-v2-deploy
+    paths:
+      - '.github/workflows/recover-cloneforge-v2-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reassemble packed source
+        run: |
+          set -euo pipefail
+          cat \
+            cloneforge-v2-deploy/source.part.00 \
+            cloneforge-v2-deploy/source.part.01 \
+            cloneforge-v2-deploy/source.part.02 \
+            cloneforge-v2-deploy/source.part.03a \
+            cloneforge-v2-deploy/source.part.03b \
+            cloneforge-v2-deploy/source.part.04 \
+            cloneforge-v2-deploy/source.part.05 \
+            > cloneforge-v2-source.b64
+          base64 --decode cloneforge-v2-source.b64 > cloneforge-v2-source.tar.gz
+          mkdir recovered-source
+          tar -xzf cloneforge-v2-source.tar.gz -C recovered-source
+          find recovered-source -type f -print | sort
+          test -f recovered-source/package.json
+          grep -n '"version"' recovered-source/package.json
+
+      - name: Verify recovered server builds
+        working-directory: recovered-source
+        run: |
+          npm install
+          npm run build
+
+      - name: Upload complete source
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloneforge-v2-recovered-source
+          path: recovered-source
+          include-hidden-files: true
+          retention-days: 14
